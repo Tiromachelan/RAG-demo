@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
-from chromadb.utils import embedding_functions
+from chromadb import EmbeddingFunction, Documents, Embeddings
+from openai import OpenAI
 
 CODEBASE_DIR = Path(__file__).parent / "example_codebase"
 CHROMA_PATH = Path(__file__).parent.parent / ".chroma_db"
@@ -53,11 +54,14 @@ def build_index() -> chromadb.Collection:
     """Index the example codebase into ChromaDB. Returns the collection."""
     client = chromadb.PersistentClient(path=str(CHROMA_PATH))
 
-    # Use OpenAI embeddings
-    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-        api_key=os.environ["OPENAI_API_KEY"],
-        model_name="text-embedding-3-small",
-    )
+    # Custom embedding function using the modern OpenAI client
+    class OpenAIEmbedFn(EmbeddingFunction):
+        def __call__(self, input: Documents) -> Embeddings:
+            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            response = client.embeddings.create(model="text-embedding-3-small", input=list(input))
+            return [item.embedding for item in response.data]
+
+    openai_ef = OpenAIEmbedFn()
 
     # Drop and recreate collection for a fresh index each startup
     try:
