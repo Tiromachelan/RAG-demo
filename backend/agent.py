@@ -7,7 +7,7 @@ from openai import AsyncOpenAI
 
 from tools import TOOL_SCHEMAS, dispatch_tool
 
-MODEL = "gpt-4o-mini"
+MODEL = "gpt-5-mini"
 
 SYSTEM_PROMPT = """You are a helpful coding assistant. You have access to a small Python codebase.
 When the user asks you to read, edit, or improve code, use the available tools:

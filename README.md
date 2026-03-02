@@ -2,7 +2,7 @@
 
 A visual demonstration of **Retrieval-Augmented Generation (RAG)** applied to a coding agent.
 
-The agent uses **GPT-4o-mini** (ChatGPT/GPT-5 mini) to read, search, and edit a small bundled Python codebase. Every RAG retrieval step and tool call is visualised in real time in the browser.
+The agent uses **GPT-5-mini** to read, search, and edit a small bundled Python codebase. Every RAG retrieval step and tool call is visualised in real time in the browser.
 
 ---
 
@@ -22,7 +22,7 @@ The agent uses **GPT-4o-mini** (ChatGPT/GPT-5 mini) to read, search, and edit a 
 RAG-demo/
 ├── backend/
 │   ├── main.py               # FastAPI app (WebSocket + REST)
-│   ├── agent.py              # GPT-4o-mini function-calling loop
+│   ├── agent.py              # GPT-5-mini function-calling loop
 │   ├── rag.py                # ChromaDB indexing & retrieval
 │   ├── tools.py              # Agent tools
 │   └── example_codebase/     # Bundled Python mini-project
