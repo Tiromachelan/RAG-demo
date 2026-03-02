@@ -1,102 +1,104 @@
-"""RAG module: indexes the example codebase into ChromaDB and provides retrieval."""
+"""RAG module: indexes the example codebase in memory and provides retrieval.
+
+Uses numpy cosine similarity — no ChromaDB required.
+Embeddings are fetched from the OpenAI API directly via httpx.
+"""
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Any
 
-import chromadb
-from chromadb import EmbeddingFunction, Documents, Embeddings
 import httpx
-from openai import OpenAI
+import numpy as np
 
 CODEBASE_DIR = Path(__file__).parent / "example_codebase"
-CHROMA_PATH = Path(__file__).parent.parent / ".chroma_db"
-COLLECTION_NAME = "codebase"
+EMBEDDING_MODEL = "text-embedding-3-small"
+OPENAI_EMBED_URL = "https://api.openai.com/v1/embeddings"
 
+
+# ── Chunking ───────────────────────────────────────────────────────────────
 
 def _chunk_file(path: Path) -> list[dict[str, Any]]:
     """Split a Python file into function/class-level chunks with metadata."""
     source = path.read_text(encoding="utf-8")
-    chunks = []
+    chunks: list[dict[str, Any]] = []
 
-    # Chunk by top-level def/class blocks
     block_pattern = re.compile(r"^(def |class )", re.MULTILINE)
     positions = [m.start() for m in block_pattern.finditer(source)] + [len(source)]
 
     if len(positions) == 1:
-        # No functions/classes — treat whole file as one chunk
-        chunks.append({"text": source, "file": path.name, "start_line": 1, "end_line": len(source.splitlines())})
-        return chunks
+        return [{"text": source, "file": path.name, "start_line": 1,
+                 "end_line": len(source.splitlines())}]
 
     for i in range(len(positions) - 1):
-        chunk_text = source[positions[i] : positions[i + 1]].strip()
+        chunk_text = source[positions[i]: positions[i + 1]].strip()
         if len(chunk_text) < 20:
             continue
-        before_text = source[: positions[i]]
-        start_line = before_text.count("\n") + 1
+        start_line = source[: positions[i]].count("\n") + 1
         end_line = start_line + chunk_text.count("\n")
-        chunks.append({"text": chunk_text, "file": path.name, "start_line": start_line, "end_line": end_line})
-
+        chunks.append({"text": chunk_text, "file": path.name,
+                        "start_line": start_line, "end_line": end_line})
     return chunks
 
 
-def build_index() -> chromadb.Collection:
-    """Index the example codebase into ChromaDB. Returns the collection."""
-    # Wipe the on-disk DB so there's never a version-mismatch with stale data
-    if CHROMA_PATH.exists():
-        shutil.rmtree(CHROMA_PATH)
+# ── Embeddings via httpx ───────────────────────────────────────────────────
 
-    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
-    class OpenAIEmbedFn(EmbeddingFunction):
-        def __call__(self, input: Documents) -> Embeddings:
-            # Pass a pre-built httpx client to avoid openai<1.52 passing
-            # unsupported 'proxies' kwarg to newer httpx versions
-            client = OpenAI(
-                api_key=os.environ["OPENAI_API_KEY"],
-                http_client=httpx.Client(),
-            )
-            response = client.embeddings.create(model="text-embedding-3-small", input=list(input))
-            return [item.embedding for item in response.data]
+def _embed(texts: list[str]) -> np.ndarray:
+    """Fetch embeddings from OpenAI — returns float32 array (n, dim)."""
+    api_key = os.environ["OPENAI_API_KEY"]
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(
+            OPENAI_EMBED_URL,
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            json={"model": EMBEDDING_MODEL, "input": texts},
+        )
+        resp.raise_for_status()
+    data = resp.json()["data"]
+    # Sort by index to guarantee order
+    data.sort(key=lambda d: d["index"])
+    return np.array([d["embedding"] for d in data], dtype=np.float32)
 
-    openai_ef = OpenAIEmbedFn()
 
-    collection = client.create_collection(
-        name=COLLECTION_NAME,
-        embedding_function=openai_ef,
-        metadata={"hnsw:space": "cosine"},
-    )
+# ── In-memory vector store ─────────────────────────────────────────────────
 
-    all_chunks: list[dict] = []
+class VectorStore:
+    def __init__(self):
+        self.chunks: list[dict[str, Any]] = []
+        self.embeddings: np.ndarray | None = None  # shape (n, dim)
+
+    def add(self, chunks: list[dict[str, Any]]) -> None:
+        self.chunks = chunks
+        self.embeddings = _embed([c["text"] for c in chunks])
+
+    def retrieve(self, query: str, k: int = 5) -> list[dict[str, Any]]:
+        if self.embeddings is None or len(self.chunks) == 0:
+            return []
+        query_emb = _embed([query])[0]
+        # Cosine similarity
+        norms = np.linalg.norm(self.embeddings, axis=1)
+        query_norm = np.linalg.norm(query_emb)
+        scores = (self.embeddings @ query_emb) / (norms * query_norm + 1e-10)
+        top_idx = np.argsort(scores)[::-1][: min(k, len(self.chunks))]
+        results = []
+        for i in top_idx:
+            chunk = dict(self.chunks[i])
+            chunk["score"] = round(float(scores[i]), 4)
+            results.append(chunk)
+        return results
+
+
+# ── API Public ──────────────────────────────────────────────────
+
+def build_index() -> VectorStore:
+    """Chunk and embed all Python files in the example codebase."""
+    store = VectorStore()
+    all_chunks: list[dict[str, Any]] = []
     for py_file in sorted(CODEBASE_DIR.glob("*.py")):
         all_chunks.extend(_chunk_file(py_file))
-
-    if all_chunks:
-        collection.add(
-            ids=[f"chunk_{i}" for i in range(len(all_chunks))],
-            documents=[c["text"] for c in all_chunks],
-            metadatas=[{"file": c["file"], "start_line": c["start_line"], "end_line": c["end_line"]} for c in all_chunks],
-        )
-
-    return collection
+    store.add(all_chunks)
+    return store
 
 
-def retrieve(collection: chromadb.Collection, query: str, k: int = 5) -> list[dict[str, Any]]:
-    """Retrieve the top-k most relevant code chunks for the given query."""
-    results = collection.query(query_texts=[query], n_results=min(k, collection.count()))
-    chunks = []
-    for doc, meta, dist in zip(
-        results["documents"][0],
-        results["metadatas"][0],
-        results["distances"][0],
-    ):
-        chunks.append(
-            {
-                "text": doc,
-                "file": meta["file"],
-                "start_line": meta["start_line"],
-                "end_line": meta["end_line"],
-                "score": round(1 - dist, 4),  # cosine similarity (higher = more relevant)
-            }
-        )
-    return chunks
+def retrieve(store: VectorStore, query: str, k: int = 5) -> list[dict[str, Any]]:
+    return store.retrieve(query, k)

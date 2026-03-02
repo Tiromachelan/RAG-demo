@@ -1,6 +1,5 @@
 """FastAPI application: WebSocket chat endpoint + REST file endpoints."""
 import json
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,16 +16,15 @@ import rag as rag_module
 from agent import run_agent
 from tools import CODEBASE_DIR
 
-# Global ChromaDB collection, initialised at startup
-_collection = None
+_store = None  # VectorStore, initialised at startup
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _collection
-    print("Indexing example codebase into ChromaDB…")
-    _collection = rag_module.build_index()
-    print(f"Index built: {_collection.count()} chunks")
+    global _store
+    print("Indexing example codebase…")
+    _store = rag_module.build_index()
+    print(f"Index built: {len(_store.chunks)} chunks")
     yield
 
 
@@ -39,7 +37,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve frontend static files
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
@@ -48,8 +45,6 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 async def root():
     return FileResponse(str(FRONTEND_DIR / "index.html"))
 
-
-# ---------- REST: file browser ----------
 
 @app.get("/files")
 async def list_files_endpoint():
@@ -64,8 +59,6 @@ async def get_file_endpoint(filename: str):
         return JSONResponse({"error": "File not found"}, status_code=404)
     return JSONResponse({"path": filename, "content": file_path.read_text(encoding="utf-8")})
 
-
-# ---------- WebSocket: agent chat ----------
 
 @app.websocket("/ws/chat")
 async def websocket_chat(websocket: WebSocket):
@@ -82,7 +75,7 @@ async def websocket_chat(websocket: WebSocket):
                 await websocket.send_text(json.dumps(event))
 
             try:
-                await run_agent(user_message, _collection, send_event)
+                await run_agent(user_message, _store, send_event)
             except Exception as exc:
                 await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
     except WebSocketDisconnect:

@@ -2,9 +2,7 @@
 from pathlib import Path
 from typing import Any
 
-import chromadb
-
-from rag import retrieve
+from rag import VectorStore, retrieve
 
 CODEBASE_DIR = Path(__file__).parent / "example_codebase"
 
@@ -78,7 +76,7 @@ def write_file(path: str, content: str) -> dict[str, Any]:
     return {"path": path, "written": True, "lines": len(content.splitlines())}
 
 
-def search_code(collection: chromadb.Collection, query: str) -> dict[str, Any]:
+def search_code(store: VectorStore, query: str) -> dict[str, Any]:
     chunks = retrieve(collection, query)
     return {"query": query, "chunks": chunks}
 
@@ -86,7 +84,7 @@ def search_code(collection: chromadb.Collection, query: str) -> dict[str, Any]:
 def dispatch_tool(
     name: str,
     args: dict[str, Any],
-    collection: chromadb.Collection,
+    store: VectorStore,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Execute a tool call and return (result, rag_events).
 
@@ -103,7 +101,7 @@ def dispatch_tool(
     elif name == "search_code":
         query = args["query"]
         rag_events.append({"type": "rag_query", "query": query})
-        result = search_code(collection, query)
+        result = search_code(store, query)
         rag_events.append({"type": "rag_results", "query": query, "chunks": result["chunks"]})
     else:
         result = {"error": f"Unknown tool: {name}"}

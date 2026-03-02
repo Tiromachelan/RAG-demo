@@ -1,14 +1,18 @@
-"""Coding agent: drives the LLM loop and streams events over a WebSocket."""
+"""Coding agent: drives the LLM loop and streams events over a WebSocket.
+
+Uses the OpenAI chat completions API directly via httpx — no openai package needed.
+"""
 import json
-from typing import Any
+import os
+from typing import Any, AsyncIterator
 
-import chromadb
 import httpx
-from openai import AsyncOpenAI
 
+from rag import VectorStore
 from tools import TOOL_SCHEMAS, dispatch_tool
 
 MODEL = "gpt-5-mini"
+OPENAI_CHAT_URL = "https://api.openai.com/v1/chat/completions"
 
 SYSTEM_PROMPT = """You are a helpful coding assistant. You have access to a small Python codebase.
 When the user asks you to read, edit, or improve code, use the available tools:
@@ -20,74 +24,77 @@ When the user asks you to read, edit, or improve code, use the available tools:
 Always search or read relevant files before making edits. Explain your changes clearly."""
 
 
+# ── OpenAI helper streaming ─────────────────────────────────────
+
+async def _stream_chunks(messages: list, tools: list) -> AsyncIterator[dict]:
+    """Yield parsed SSE delta objects from the OpenAI streaming chat API."""
+    api_key = os.environ["OPENAI_API_KEY"]
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream(
+            "POST",
+            OPENAI_CHAT_URL,
+            headers={"Authorization": f"Bearer {api_key}",
+                     "Content-Type": "application/json"},
+            json={"model": MODEL, "messages": messages,
+                  "tools": tools, "tool_choice": "auto", "stream": True},
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if payload.strip() == "[DONE]":
+                    break
+                yield json.loads(payload)
+
+
+# ── Agent loop ─────────────────────────────────────────────────────────────
+
 async def run_agent(
     user_message: str,
-    collection: chromadb.Collection,
-    send_event,  # callable: async (event_dict) -> None
+    store: VectorStore,
+    send_event,  # async callable: (event_dict) -> None
 ) -> None:
     """Run the agent loop for a single user message, streaming events via send_event."""
-    client = AsyncOpenAI(http_client=httpx.AsyncClient())
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
     ]
 
     while True:
-        # Stream the LLM response
-        stream = await client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            tools=TOOL_SCHEMAS,
-            tool_choice="auto",
-            stream=True,
-        )
-
-        # Accumulate the streamed response
         accumulated_content = ""
         accumulated_tool_calls: dict[int, dict] = {}
         finish_reason = "stop"
-        last_chunk = None
 
-        async for chunk in stream:
-            last_chunk = chunk
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if delta is None:
-                continue
+        async for chunk in _stream_chunks(messages, TOOL_SCHEMAS):
+            choice = chunk.get("choices", [{}])[0]
+            delta = choice.get("delta", {})
+            finish_reason = choice.get("finish_reason") or finish_reason
 
             # Stream text tokens
-            if delta.content:
-                accumulated_content += delta.content
-                await send_event({"type": "llm_token", "token": delta.content})
+            token = delta.get("content")
+            if token:
+                accumulated_content += token
+                await send_event({"type": "llm_token", "token": token})
 
             # Accumulate tool call deltas
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in accumulated_tool_calls:
-                        accumulated_tool_calls[idx] = {
-                            "id": tc.id or "",
-                            "name": tc.function.name if tc.function and tc.function.name else "",
-                            "arguments": "",
-                        }
-                    if tc.id:
-                        accumulated_tool_calls[idx]["id"] = tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            accumulated_tool_calls[idx]["name"] = tc.function.name
-                        if tc.function.arguments:
-                            accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
+            for tc in delta.get("tool_calls", []):
+                idx = tc.get("index", 0)
+                if idx not in accumulated_tool_calls:
+                    accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc.get("id"):
+                    accumulated_tool_calls[idx]["id"] = tc["id"]
+                fn = tc.get("function", {})
+                if fn.get("name"):
+                    accumulated_tool_calls[idx]["name"] = fn["name"]
+                if fn.get("arguments"):
+                    accumulated_tool_calls[idx]["arguments"] += fn["arguments"]
 
-        if last_chunk and last_chunk.choices:
-            finish_reason = last_chunk.choices[0].finish_reason or "stop"
-
-        # Build assistant message to append to history
+        # Build assistant message
         if accumulated_tool_calls:
             tool_calls_list = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                }
+                {"id": tc["id"], "type": "function",
+                 "function": {"name": tc["name"], "arguments": tc["arguments"]}}
                 for tc in accumulated_tool_calls.values()
             ]
             assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls_list}
@@ -97,12 +104,12 @@ async def run_agent(
         else:
             messages.append({"role": "assistant", "content": accumulated_content})
 
-        # If no tool calls, we're done
-        if not accumulated_tool_calls or finish_reason == "stop":
+        # Done if no tool calls
+        if not accumulated_tool_calls:
             await send_event({"type": "llm_done", "content": accumulated_content})
             break
 
-        # Execute each tool call
+        # Execute tool calls
         for tc in accumulated_tool_calls.values():
             tool_name = tc["name"]
             try:
@@ -110,24 +117,16 @@ async def run_agent(
             except json.JSONDecodeError:
                 tool_args = {}
 
-            # Emit tool_call event
-            await send_event({"type": "tool_call", "tool": tool_name, "args": tool_args, "call_id": tc["id"]})
+            await send_event({"type": "tool_call", "tool": tool_name,
+                               "args": tool_args, "call_id": tc["id"]})
 
-            # Dispatch tool (may emit RAG events)
-            result, rag_events = dispatch_tool(tool_name, tool_args, collection)
+            result, rag_events = dispatch_tool(tool_name, tool_args, store)
 
-            # Emit RAG events before tool_result
             for ev in rag_events:
                 await send_event(ev)
 
-            # Emit tool_result event
-            await send_event({"type": "tool_result", "tool": tool_name, "result": result, "call_id": tc["id"]})
+            await send_event({"type": "tool_result", "tool": tool_name,
+                               "result": result, "call_id": tc["id"]})
 
-            # Append tool result to message history
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": json.dumps(result),
-                }
-            )
+            messages.append({"role": "tool", "tool_call_id": tc["id"],
+                              "content": json.dumps(result)})
