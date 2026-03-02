@@ -77,7 +77,7 @@ def write_file(path: str, content: str) -> dict[str, Any]:
 
 
 def search_code(store: VectorStore, query: str) -> dict[str, Any]:
-    chunks = retrieve(collection, query)
+    chunks = retrieve(store, query)
     return {"query": query, "chunks": chunks}
 
 
