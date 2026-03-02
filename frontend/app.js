@@ -139,7 +139,7 @@ function startRagCard(query) {
       <div class="rag-step">
         <div class="rag-step-num">2</div>
         <div class="rag-step-content">
-          <div class="rag-step-label">Embedding → ChromaDB search</div>
+          <div class="rag-step-label">Embedding → cosine similarity search</div>
           <div class="rag-step-value" style="color:var(--text-muted)">Searching…</div>
         </div>
       </div>

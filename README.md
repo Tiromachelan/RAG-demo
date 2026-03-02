@@ -23,7 +23,7 @@ RAG-demo/
 ├── backend/
 │   ├── main.py               # FastAPI app (WebSocket + REST)
 │   ├── agent.py              # GPT-5-mini function-calling loop
-│   ├── rag.py                # ChromaDB indexing & retrieval
+│   ├── rag.py                # In-memory vector store (numpy cosine similarity)
 │   ├── tools.py              # Agent tools
 │   └── example_codebase/     # Bundled Python mini-project
 │       ├── calculator.py
@@ -89,7 +89,7 @@ Visit **http://localhost:8000** in your browser.
 
 ## How RAG Works Here
 
-1. **Index** — At startup, each Python file is chunked by function/class and embedded with `text-embedding-3-small` into a local ChromaDB collection.
+1. **Index** — At startup, each Python file is chunked by function/class, embedded with `text-embedding-3-small` via the OpenAI API, and stored in an in-memory numpy array.
 2. **Retrieve** — When the agent calls `search_code(query)`, your query is embedded and the most semantically similar chunks are returned with cosine similarity scores.
 3. **Augment** — Retrieved chunks are passed back to the LLM as tool results, giving it grounded context before it generates a response or makes edits.
 4. **Visualise** — Each retrieval step is rendered as an animated card in the Chat panel showing the query, matched chunks (file, line range, similarity score), and the injected context.

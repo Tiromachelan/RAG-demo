@@ -1,7 +1,6 @@
 """RAG module: indexes the example codebase in memory and provides retrieval.
 
-Uses numpy cosine similarity — no ChromaDB required.
-Embeddings are fetched from the OpenAI API directly via httpx.
+Uses numpy cosine similarity. Embeddings are fetched from the OpenAI API via httpx.
 """
 import os
 import re
