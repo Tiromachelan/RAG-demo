@@ -1,11 +1,13 @@
 """RAG module: indexes the example codebase into ChromaDB and provides retrieval."""
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 import chromadb
 from chromadb import EmbeddingFunction, Documents, Embeddings
+import httpx
 from openai import OpenAI
 
 CODEBASE_DIR = Path(__file__).parent / "example_codebase"
@@ -18,18 +20,7 @@ def _chunk_file(path: Path) -> list[dict[str, Any]]:
     source = path.read_text(encoding="utf-8")
     chunks = []
 
-    # Split on top-level def/class boundaries
-    pattern = re.compile(r"(?=^(def |class |\"\"\"|#))", re.MULTILINE)
-    parts = pattern.split(source)
-
-    # Collect non-empty, meaningful parts
-    current_lines: list[str] = []
-    current_start = 1
-
-    for line in source.splitlines(keepends=True):
-        current_lines.append(line)
-
-    # Use a sliding window approach: chunk by top-level blocks
+    # Chunk by top-level def/class blocks
     block_pattern = re.compile(r"^(def |class )", re.MULTILINE)
     positions = [m.start() for m in block_pattern.finditer(source)] + [len(source)]
 
@@ -52,22 +43,23 @@ def _chunk_file(path: Path) -> list[dict[str, Any]]:
 
 def build_index() -> chromadb.Collection:
     """Index the example codebase into ChromaDB. Returns the collection."""
-    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+    # Wipe the on-disk DB so there's never a version-mismatch with stale data
+    if CHROMA_PATH.exists():
+        shutil.rmtree(CHROMA_PATH)
 
-    # Custom embedding function using the modern OpenAI client
+    client = chromadb.PersistentClient(path=str(CHROMA_PATH))
     class OpenAIEmbedFn(EmbeddingFunction):
         def __call__(self, input: Documents) -> Embeddings:
-            client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+            # Pass a pre-built httpx client to avoid openai<1.52 passing
+            # unsupported 'proxies' kwarg to newer httpx versions
+            client = OpenAI(
+                api_key=os.environ["OPENAI_API_KEY"],
+                http_client=httpx.Client(),
+            )
             response = client.embeddings.create(model="text-embedding-3-small", input=list(input))
             return [item.embedding for item in response.data]
 
     openai_ef = OpenAIEmbedFn()
-
-    # Drop and recreate collection for a fresh index each startup
-    try:
-        client.delete_collection(COLLECTION_NAME)
-    except Exception:
-        pass
 
     collection = client.create_collection(
         name=COLLECTION_NAME,

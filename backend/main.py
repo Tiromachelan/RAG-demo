@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-load_dotenv()
+# Load .env from project root regardless of which directory uvicorn is run from
+load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 
 import rag as rag_module
 from agent import run_agent

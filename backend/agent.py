@@ -1,8 +1,9 @@
 """Coding agent: drives the LLM loop and streams events over a WebSocket."""
 import json
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import chromadb
+import httpx
 from openai import AsyncOpenAI
 
 from tools import TOOL_SCHEMAS, dispatch_tool
@@ -25,7 +26,7 @@ async def run_agent(
     send_event,  # callable: async (event_dict) -> None
 ) -> None:
     """Run the agent loop for a single user message, streaming events via send_event."""
-    client = AsyncOpenAI()
+    client = AsyncOpenAI(http_client=httpx.AsyncClient())
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
@@ -44,8 +45,11 @@ async def run_agent(
         # Accumulate the streamed response
         accumulated_content = ""
         accumulated_tool_calls: dict[int, dict] = {}
+        finish_reason = "stop"
+        last_chunk = None
 
         async for chunk in stream:
+            last_chunk = chunk
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta is None:
                 continue
@@ -73,7 +77,8 @@ async def run_agent(
                         if tc.function.arguments:
                             accumulated_tool_calls[idx]["arguments"] += tc.function.arguments
 
-        finish_reason = chunk.choices[0].finish_reason if chunk.choices else "stop"
+        if last_chunk and last_chunk.choices:
+            finish_reason = last_chunk.choices[0].finish_reason or "stop"
 
         # Build assistant message to append to history
         if accumulated_tool_calls:
