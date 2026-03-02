@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Coding Agent Demo</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>🤖 RAG Coding Agent <span class="badge">GPT-4o-mini + ChromaDB</span></h1>
+    <div id="status-dot" class="dot disconnected" title="WebSocket status"></div>
+  </header>
+
+  <main class="layout">
+
+    <!-- LEFT: Chat panel -->
+    <section class="panel" id="chat-panel">
+      <div class="panel-header">💬 Chat</div>
+      <div id="chat-messages" class="scroll-area"></div>
+      <form id="chat-form" class="input-row">
+        <input id="chat-input" type="text" placeholder="Ask the agent to edit or explain code…" autocomplete="off" />
+        <button type="submit" id="send-btn">Send</button>
+      </form>
+    </section>
+
+    <!-- CENTER: File editor -->
+    <section class="panel" id="editor-panel">
+      <div class="panel-header">
+        📄 File Editor
+        <select id="file-selector"></select>
+      </div>
+      <div class="scroll-area">
+        <pre id="file-content"><code id="file-code">← Select a file or ask the agent to edit one</code></pre>
+      </div>
+    </section>
+
+    <!-- RIGHT: Request log -->
+    <section class="panel" id="log-panel">
+      <div class="panel-header">
+        📋 Request Log
+        <button id="clear-log-btn" class="small-btn">Clear</button>
+      </div>
+      <div id="log-entries" class="scroll-area"></div>
+    </section>
+
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
